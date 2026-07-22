@@ -13,6 +13,12 @@ def load_image(path: str) -> np.ndarray:
         raise FileNotFoundError(f"Input file not found: {path}")
     except Exception as e:
         raise IOError(f"Failed to load image '{path}': {e}")
+    w, h = img.width, img.height
+    if w % 2 != 0 or h % 2 != 0:
+        w_even = w - (w % 2)
+        h_even = h - (h % 2)
+        img = img.crop((0, 0, w_even, h_even))
+        logger.debug("Cropped image to even dimensions: %dx%d -> %dx%d", w, h, w_even, h_even)
     arr = np.array(img, dtype=np.float32) / 255.0
     logger.debug("Loaded image '%s': %dx%d", path, img.width, img.height)
     return arr
@@ -30,117 +36,157 @@ def save_image(arr: np.ndarray, path: str) -> None:
     logger.debug("Saved image to '%s'", path)
 
 
-def invert_negative(arr: np.ndarray) -> np.ndarray:
-    """Invert a negative scan to positive."""
-    return 1.0 - arr
-
-
 def _rgb_to_linear(arr: np.ndarray) -> np.ndarray:
-    """Apply approximate sRGB gamma decode."""
+    """sRGB gamma decode to linear light."""
     threshold = 0.04045
-    linear = np.where(arr <= threshold, arr / 12.92, ((arr + 0.055) / 1.055) ** 2.4)
-    return linear
+    return np.where(arr <= threshold, arr / 12.92, ((arr + 0.055) / 1.055) ** 2.4)
 
 
 def _linear_to_rgb(arr: np.ndarray) -> np.ndarray:
-    """Apply approximate sRGB gamma encode."""
+    """Linear light to sRGB gamma encode."""
     threshold = 0.0031308
-    rgb = np.where(arr <= threshold, arr * 12.92, 1.055 * (arr ** (1.0 / 2.4)) - 0.055)
-    return rgb
+    return np.where(arr <= threshold, arr * 12.92, 1.055 * (arr ** (1.0 / 2.4)) - 0.055)
 
 
-def _estimate_mask_from_border(arr: np.ndarray, border_size: float = 0.05) -> np.ndarray:
-    """Estimate the color mask color from the image border region.
-
-    The border of a film negative scan usually contains the unexposed
-    film base, which reveals the pure color mask.
-    """
-    h, w = arr.shape[:2]
-    bh = max(1, int(h * border_size))
-    bw = max(1, int(w * border_size))
-
-    border_pixels = np.concatenate([
-        arr[:bh, :, :].reshape(-1, 3),
-        arr[-bh:, :, :].reshape(-1, 3),
-        arr[:, :bw, :].reshape(-1, 3),
-        arr[:, -bw:, :].reshape(-1, 3),
-    ], axis=0)
-
-    mask_color = np.median(border_pixels, axis=0)
-    logger.debug("Border mask estimate: R=%.4f G=%.4f B=%.4f", *mask_color)
-    return mask_color
-
-
-def _auto_estimate_mask(arr: np.ndarray) -> np.ndarray:
-    """Auto-estimate the mask color using dark pixel analysis.
-
-    In a negative scan, the darkest areas (film base) represent the
-    pure color mask. We sample the darkest 2% of pixels.
-    """
-    h, w = arr.shape[:2]
-    flat = arr.reshape(-1, 3)
-
-    luminance = 0.299 * flat[:, 0] + 0.587 * flat[:, 1] + 0.114 * flat[:, 2]
-    num_dark = max(1, len(flat) // 50)
-
-    dark_idx = np.argpartition(luminance, num_dark)[:num_dark]
-    mask_color = np.median(flat[dark_idx], axis=0)
-    logger.debug("Auto mask estimate: R=%.4f G=%.4f B=%.4f", *mask_color)
-    return mask_color
-
-
-def remove_color_mask(
+def estimate_white_balance(
     arr: np.ndarray,
-    mask_color: np.ndarray | None = None,
-    mode: str = "auto",
-    border_size: float = 0.05,
-    brightness: float = 1.0,
-    contrast: float = 1.0,
-    saturation: float = 1.0,
+    method: str = "gray_world",
+    percentile: float = 95.0,
 ) -> np.ndarray:
-    """Remove the orange color mask from an inverted negative scan.
+    """Estimate white balance gains from an image.
+
+    Works in linear light space for physical accuracy.
 
     Parameters
     ----------
     arr : np.ndarray
-        Input RGB image as float32 in [0, 1]. This should be the
-        **already inverted** positive image (use invert_negative() first).
-    mask_color : np.ndarray or None
-        Manual mask color as (R, G, B) in [0, 1]. Used when mode="manual".
-    mode : str
-        One of "auto", "border", "manual".
-    border_size : float
-        Fraction of image size for border analysis (mode="border" only).
-    brightness : float
-        Brightness multiplier after mask removal (default 1.0).
-    contrast : float
-        Contrast multiplier after mask removal (default 1.0).
-    saturation : float
-        Saturation multiplier after mask removal (default 1.0).
+        Input RGB image as float32 in [0, 1].
+    method : str
+        "gray_world" - average pixel should be neutral gray.
+        "white_patch" - brightest pixel should be white.
+        "percentile" - top percentile brightest pixels average to white.
+    percentile : float
+        Percentile for "percentile" method (0-100, default 95).
 
     Returns
     -------
     np.ndarray
-        Color-corrected RGB image as float32 in [0, 1].
+        Gains (g_r, g_g, g_b) normalized so g_g = 1.0.
     """
-    if mode == "auto":
-        mask_color = _auto_estimate_mask(arr)
-    elif mode == "border":
-        mask_color = _estimate_mask_from_border(arr, border_size)
-    elif mode == "manual":
-        if mask_color is None:
-            raise ValueError("mask_color must be provided when mode='manual'")
+    arr_lin = _rgb_to_linear(arr)
+
+    if method == "gray_world":
+        means = np.mean(arr_lin, axis=(0, 1))
+    elif method == "white_patch":
+        means = np.max(arr_lin, axis=(0, 1))
+    elif method == "percentile":
+        flat = arr_lin.reshape(-1, 3)
+        luminance = 0.2126 * flat[:, 0] + 0.7152 * flat[:, 1] + 0.0722 * flat[:, 2]
+        n_bright = max(1, int(len(flat) * (100.0 - percentile) / 100.0))
+        bright_idx = np.argpartition(-luminance, n_bright)[:n_bright]
+        means = np.mean(flat[bright_idx], axis=0)
     else:
-        raise ValueError(f"Unknown mode: {mode}")
+        raise ValueError(f"Unknown white balance method: {method}")
 
-    mask_color = np.clip(mask_color, 1e-6, 1.0)
+    gains = np.where(means > 1e-8, np.mean(means) / means, 1.0)
+    gains = gains / gains[1]
+    logger.debug(
+        "White balance (%s): gains R=%.4f G=%.4f B=%.4f",
+        method, gains[0], gains[1], gains[2],
+    )
+    return gains.astype(np.float32)
 
-    arr_linear = _rgb_to_linear(arr)
-    mask_linear = _rgb_to_linear(mask_color)
 
-    corrected = arr_linear / mask_linear[np.newaxis, np.newaxis, :]
+def apply_white_balance(
+    arr: np.ndarray,
+    gains: np.ndarray,
+    strength: float = 1.0,
+) -> np.ndarray:
+    """Apply white balance correction in linear space.
 
-    result = _linear_to_rgb(corrected)
+    Parameters
+    ----------
+    arr : np.ndarray
+        Input RGB image as float32 in [0, 1].
+    gains : np.ndarray
+        White balance gains (g_r, g_g, g_b) from estimate_white_balance().
+    strength : float
+        Blend strength 0.0-1.0. 0 = no correction, 1 = full correction.
+
+    Returns
+    -------
+    np.ndarray
+        White-balanced RGB image in [0, 1].
+    """
+    if strength <= 0.0:
+        return arr
+    arr_lin = _rgb_to_linear(arr)
+    g = gains[np.newaxis, np.newaxis, :]
+    g = 1.0 + (g - 1.0) * strength
+    corrected = arr_lin * g
+    corrected = np.clip(corrected, 0, None)
+    return _linear_to_rgb(corrected)
+
+
+def correct_cross_process(
+    arr: np.ndarray,
+    method: str = "gray_world",
+    percentile: float = 95.0,
+    white_r: float | None = None,
+    white_g: float | None = None,
+    white_b: float | None = None,
+    strength: float = 0.6,
+    brightness: float = 1.0,
+    contrast: float = 1.0,
+    saturation: float = 1.0,
+) -> np.ndarray:
+    """Correct the color cast of a Pentax cross-process (正负逆冲) image.
+
+    Balances colors toward natural while preserving film-like tonality.
+    Auto-detects white balance then blends with the original by a
+    controlled strength factor.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Input RGB image as float32 in [0, 1].
+    method : str
+        Auto white balance method: "gray_world", "white_patch", "percentile".
+        Ignored when manual white point is provided.
+    percentile : float
+        Percentile for "percentile" method (0-100).
+    white_r, white_g, white_b : float or None
+        Manual reference white point as RGB in [0, 1].
+        When all three are provided, overrides auto detection.
+        The reference is: "what color in the image should be white?"
+    strength : float
+        Correction strength 0.0-1.0. Higher = more correction toward natural.
+        Default 0.6 preserves some cross-process character.
+    brightness : float
+        Brightness multiplier (default 1.0).
+    contrast : float
+        Contrast multiplier around mid-gray (default 1.0).
+    saturation : float
+        Saturation multiplier (default 1.0).
+
+    Returns
+    -------
+    np.ndarray
+        Corrected RGB image as float32 in [0, 1].
+    """
+    if white_r is not None and white_g is not None and white_b is not None:
+        ref = np.array([white_r, white_g, white_b], dtype=np.float32)
+        ref = np.clip(ref, 1e-6, 1.0)
+        gains = np.mean(ref) / ref
+        gains = gains / gains[1]
+        logger.debug(
+            "Manual white reference: RGB=%.4f,%.4f,%.4f gains=%.4f,%.4f,%.4f",
+            white_r, white_g, white_b, gains[0], gains[1], gains[2],
+        )
+    else:
+        gains = estimate_white_balance(arr, method, percentile)
+
+    result = apply_white_balance(arr, gains, strength)
 
     if contrast != 1.0:
         result = (result - 0.5) * contrast + 0.5
@@ -153,87 +199,38 @@ def remove_color_mask(
         result[:, :, 1] = gray + saturation * (result[:, :, 1] - gray)
         result[:, :, 2] = gray + saturation * (result[:, :, 2] - gray)
 
-    result = np.clip(result, 0, 1)
-    return result
+    return np.clip(result, 0, 1)
 
 
-def process_negative(
+def process_image(
     input_path: str,
     output_path: str,
-    mode: str = "auto",
-    border_size: float = 0.05,
-    mask_r: float | None = None,
-    mask_g: float | None = None,
-    mask_b: float | None = None,
+    method: str = "gray_world",
+    percentile: float = 95.0,
+    white_r: float | None = None,
+    white_g: float | None = None,
+    white_b: float | None = None,
+    strength: float = 0.6,
     brightness: float = 1.0,
     contrast: float = 1.0,
     saturation: float = 1.0,
 ) -> np.ndarray:
-    """Full pipeline: load negative scan, invert, remove mask, save."""
-    arr = load_image(input_path)
-    positive = invert_negative(arr)
+    """Load, correct cross-process color cast, and save.
 
-    if mode == "manual" and mask_r is not None and mask_g is not None and mask_b is not None:
-        mask_color = np.array([mask_r, mask_g, mask_b], dtype=np.float32)
-    else:
-        mask_color = None
-
-    result = remove_color_mask(
-        positive,
-        mask_color=mask_color,
-        mode=mode,
-        border_size=border_size,
-        brightness=brightness,
-        contrast=contrast,
-        saturation=saturation,
-    )
-
-    save_image(result, output_path)
-    return result
-
-
-def process_digital(
-    input_path: str,
-    output_path: str,
-    mode: str = "auto",
-    border_size: float = 0.05,
-    mask_r: float | None = None,
-    mask_g: float | None = None,
-    mask_b: float | None = None,
-    brightness: float = 1.0,
-    contrast: float = 1.0,
-    saturation: float = 1.0,
-) -> np.ndarray:
-    """Process a digital image that has a color cast applied (no inversion)."""
-    arr = load_image(input_path)
-
-    if mode == "manual" and mask_r is not None and mask_g is not None and mask_b is not None:
-        mask_color = np.array([mask_r, mask_g, mask_b], dtype=np.float32)
-    else:
-        mask_color = None
-
-    result = remove_color_mask(
-        arr,
-        mask_color=mask_color,
-        mode=mode,
-        border_size=border_size,
-        brightness=brightness,
-        contrast=contrast,
-        saturation=saturation,
-    )
-
-    save_image(result, output_path)
-    return result
-
-
-def detect_mask_color(arr: np.ndarray, mode: str = "auto", border_size: float = 0.05) -> np.ndarray:
-    """Detect and return the estimated mask color without processing.
-
-    Returns (R, G, B) values in [0, 1] range.
+    Parameters match correct_cross_process().
     """
-    if mode == "auto":
-        return _auto_estimate_mask(arr)
-    elif mode == "border":
-        return _estimate_mask_from_border(arr, border_size)
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+    arr = load_image(input_path)
+    result = correct_cross_process(
+        arr,
+        method=method,
+        percentile=percentile,
+        white_r=white_r,
+        white_g=white_g,
+        white_b=white_b,
+        strength=strength,
+        brightness=brightness,
+        contrast=contrast,
+        saturation=saturation,
+    )
+    save_image(result, output_path)
+    return result

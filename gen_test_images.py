@@ -1,10 +1,8 @@
-"""Generate a synthetic test image and validate the decolor mask tool.
+"""Generate synthetic test images for the decolor mask tool.
 
-Creates a simulated "scanned negative" by:
-1. Taking a known color image (a simple gradient + color patches)
-2. Inverting it to simulate negative film
-3. Applying an orange color mask
-4. Then processing it with our tool to verify the mask is removed.
+Creates:
+1. test_original.png - A color gradient with color patches (ground truth)
+2. test_cross_process.png - Same image with warm/orange cross-process cast applied
 """
 import numpy as np
 from PIL import Image
@@ -36,13 +34,12 @@ def create_test_image() -> np.ndarray:
     return np.stack([r, g, b], axis=-1).astype(np.float32)
 
 
-def simulate_negative_scan(positive: np.ndarray, mask_color=(0.85, 0.55, 0.28)) -> np.ndarray:
-    """Simulate a film negative scan with an orange mask."""
-    negative = 1.0 - positive
-    mask = np.array(mask_color, dtype=np.float32)
-    scan = negative * (1.0 - mask) * 0.8 + mask * 0.6
-    scan = np.clip(scan, 0, 1)
-    return scan
+def apply_cross_process_cast(arr: np.ndarray) -> np.ndarray:
+    """Apply a warm orange cross-process color cast to simulate Pentax style."""
+    cast = np.array([0.88, 0.72, 0.52], dtype=np.float32)
+    result = arr * cast[np.newaxis, np.newaxis, :] * 1.2 + cast * 0.15
+    result = np.clip(result, 0, 1)
+    return result
 
 
 def main():
@@ -50,16 +47,16 @@ def main():
     positive = create_test_image()
     _save(positive, "test_original.png")
 
-    print("Simulating negative scan with orange mask...")
-    negative_scan = simulate_negative_scan(positive)
-    _save(negative_scan, "test_negative_scan.png")
+    print("Applying cross-process color cast...")
+    cross_process = apply_cross_process_cast(positive)
+    _save(cross_process, "test_negative_scan.png")
 
     print("\nTest images created:")
-    print("  test_original.png      - Original positive image (ground truth)")
-    print("  test_negative_scan.png - Simulated negative scan with orange mask")
+    print("  test_original.png      - Original reference image")
+    print("  test_negative_scan.png - Image with cross-process color cast")
     print("\nNow run:")
-    print("  python -m decolor_mask.cli test_negative_scan.png test_result_auto.png --type negative --mode auto")
-    print("  python -m decolor_mask.cli test_negative_scan.png test_result_border.png --type negative --mode border")
+    print("  python -m decolor_mask.cli test_negative_scan.png test_result.png --method gray_world --strength 0.6")
+    print("  python -m decolor_mask.cli test_negative_scan.png test_result.png --method manual --white 0.88 0.72 0.52 --strength 0.8")
 
 
 if __name__ == "__main__":

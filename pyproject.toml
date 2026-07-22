@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "decolor-mask"
 version = "1.0.0"
-description = "正负逆冲 - 去除胶片负片扫描中的橙色色罩"
-requires-python = ">=3.8"
+description = "正负逆冲 - 修正宾得正负逆冲风格照片的色偏，保留胶片质感"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "numpy>=1.21.0",
@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 decolor-mask = "decolor_mask.cli:main"
+decolor-mask-gui = "decolor_mask.ui:main"
 
 [project.urls]
 Source = "https://github.com/waliean/positive-negative-reverse"
