@@ -80,6 +80,9 @@ class _SliderRow:
     def pack(self, **kw):
         self.frame.pack(**kw)
 
+    def pack_forget(self):
+        self.frame.pack_forget()
+
     def configure_state(self, state):
         self.scale.configure(state=state)
         self.entry.configure(state=state)
