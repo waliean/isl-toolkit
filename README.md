@@ -9,8 +9,8 @@
 ## 安装
 
 ```bash
-git clone https://github.com/waliean/正负逆冲.git
-cd 正负逆冲
+git clone https://github.com/waliean/positive-negative-reverse.git
+cd positive-negative-reverse
 pip install -e .
 ```
 

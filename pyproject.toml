@@ -17,4 +17,4 @@ dependencies = [
 decolor-mask = "decolor_mask.cli:main"
 
 [project.urls]
-Source = "https://github.com/waliean/正负逆冲"
+Source = "https://github.com/waliean/positive-negative-reverse"
