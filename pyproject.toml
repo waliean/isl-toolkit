@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decolor-mask"
+version = "1.0.0"
+description = "正负逆冲 - 去除胶片负片扫描中的橙色色罩"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.21.0",
+    "Pillow>=9.0.0",
+]
+
+[project.scripts]
+decolor-mask = "decolor_mask.cli:main"
+
+[project.urls]
+Source = "https://github.com/waliean/正负逆冲"
