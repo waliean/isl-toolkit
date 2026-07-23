@@ -89,7 +89,7 @@ isl-toolkit ./photos --strength 0.8
 
 欢迎投喂 ☕
 
-![微信](mm_facetoface_collect_qrcode_1784791431933.png) ![支付宝](alipay_qrcode.png)
+<img src="mm_facetoface_collect_qrcode_1784791431933.png" width="200"> <img src="alipay_qrcode.png" width="200">
 
 ## License
 
