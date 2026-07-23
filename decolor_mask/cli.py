@@ -1,26 +1,27 @@
-"""CLI tool for removing arbitrary color mask from cross-process styled images.
+"""RAW去色罩 CLI — 一键批量处理RAW文件。
 
-Usage:
-    python -m decolor_mask.cli input.jpg output.jpg
-    decolor-mask input.jpg output.jpg --method white_patch --strength 0.7
-    decolor-mask input.jpg output.jpg --method manual --mask 0.85 0.55 0.28
-    decolor-mask input.jpg output.jpg --method dark_pixel  (for film scans)
-    decolor-mask "photos/*.jpg" output/ --batch
+用法:
+    decolor-mask                         处理当前文件夹所有RAW
+    decolor-mask D:\\photos               处理指定文件夹
+    decolor-mask D:\\photos -o D:\\out     指定输出目录
+    decolor-mask . --strength 0.5        自定义强度 (0=保留原色, 1=完全中性化)
+    decolor-mask . --wb daylight         使用日光白平衡
+    decolor-mask . -r                    递归搜索子文件夹
+    decolor-mask . --pipeline            使用完整滤镜管线
+    decolor-mask . --pipeline --chroma-nr 0.3 --dehaze 0.2
 """
 
 import argparse
-import glob
 import logging
 import os
 import sys
 
-from decolor_mask.core import load_image, process_image, estimate_color_mask
+from decolor_mask.core import find_raw_files, process_folder, process_raw
 
 logger = logging.getLogger("decolor_mask")
 
 
 def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
-    """Configure logging level and format."""
     if quiet:
         level = logging.WARNING
     elif verbose:
@@ -36,151 +37,139 @@ def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
     root_logger.setLevel(level)
 
 
-def _build_kwargs(args: argparse.Namespace) -> dict:
-    return dict(
-        method=args.method,
-        percentile=args.percentile,
-        border_size=args.border_size,
-        mask_r=args.mask_r,
-        mask_g=args.mask_g,
-        mask_b=args.mask_b,
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="RAW去色罩 — 自动识别文件夹内RAW文件，通过白平衡混合或滤镜管线去除色罩。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""示例:
+  decolor-mask                         处理当前文件夹所有RAW
+  decolor-mask D:\\photos               处理指定文件夹
+  decolor-mask D:\\photos -o D:\\out     指定输出目录
+  decolor-mask . --strength 0.5        自定义强度(0=保留原色, 1=完全中性化)
+  decolor-mask . --wb daylight         使用日光白平衡
+  decolor-mask . --wb camera           仅用相机WB
+  decolor-mask . -r                    递归搜索子文件夹
+  decolor-mask . -b 1.2 -c 1.1         调整亮度与对比度
+  decolor-mask . --pipeline            启用完整滤镜管线
+  decolor-mask . --pipeline --chroma-nr 0.3 --dehaze 0.2  降噪+去雾
+""",
+    )
+
+    parser.add_argument(
+        "folder", nargs="?", default=".",
+        help="包含RAW文件的文件夹 (默认: 当前目录)",
+    )
+    parser.add_argument(
+        "--output", "-o", default=None,
+        help="输出目录 (默认: 输入文件夹下的 corrected/)",
+    )
+    parser.add_argument(
+        "--strength", "-s", type=float, default=0.8,
+        help="去色罩强度 0.0-1.0 (0=保留原色, 1=完全中性化). 默认: 0.8",
+    )
+    parser.add_argument(
+        "--wb", choices=["auto", "camera", "daylight"], default="auto",
+        help="目标白平衡模式. 默认: auto",
+    )
+    parser.add_argument(
+        "--brightness", "-b", type=float, default=1.0,
+        help="后处理亮度倍率. 默认: 1.0",
+    )
+    parser.add_argument(
+        "--contrast", "-c", type=float, default=1.0,
+        help="后处理对比度倍率. 默认: 1.0",
+    )
+    parser.add_argument(
+        "--saturation", type=float, default=1.0,
+        help="后处理饱和度倍率. 默认: 1.0",
+    )
+    parser.add_argument(
+        "--recursive", "-r", action="store_true",
+        help="递归搜索子文件夹",
+    )
+
+    # 新增: 滤镜管线参数
+    parser.add_argument(
+        "--pipeline", action="store_true",
+        help="启用完整滤镜管线 (LCC反转 + 降噪 + 去雾 + 平场校正)",
+    )
+    parser.add_argument(
+        "--chroma-nr", type=float, default=0.0,
+        help="色度降噪强度 0.0-1.0 (需 --pipeline). 推荐: 0.2-0.5",
+    )
+    parser.add_argument(
+        "--band-nr", type=float, default=0.0,
+        help="频带降噪强度 0.0-1.0 (需 --pipeline). 推荐: 0.1-0.3",
+    )
+    parser.add_argument(
+        "--flat-field", type=str, default=None,
+        help="白帧参考图路径 (需 --pipeline). 不指定则自动估计",
+    )
+    parser.add_argument(
+        "--dehaze", type=float, default=0.0,
+        help="去雾强度 0.0-1.0 (需 --pipeline). 推荐: 0.2-0.5",
+    )
+
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="详细输出 (debug级别)",
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="静默模式",
+    )
+
+    args = parser.parse_args()
+    setup_logging(verbose=args.verbose, quiet=args.quiet)
+
+    input_dir = os.path.abspath(args.folder)
+    output_dir = args.output or os.path.join(input_dir, "corrected")
+
+    raw_files = find_raw_files(input_dir, args.recursive)
+    if not raw_files:
+        print(f"在 '{input_dir}' 中未找到RAW文件")
+        sys.exit(1)
+
+    print(f"文件夹   : {input_dir}")
+    print(f"RAW文件  : {len(raw_files)} 个")
+    print(f"强度     : {args.strength}")
+    print(f"目标WB   : {args.wb}")
+    if args.brightness != 1.0:
+        print(f"亮度     : {args.brightness}")
+    if args.contrast != 1.0:
+        print(f"对比度   : {args.contrast}")
+    if args.saturation != 1.0:
+        print(f"饱和度   : {args.saturation}")
+    if args.pipeline:
+        print(f"滤镜管线 : 启用")
+        if args.chroma_nr > 0:
+            print(f"  色度降噪: {args.chroma_nr}")
+        if args.band_nr > 0:
+            print(f"  频带降噪: {args.band_nr}")
+        if args.dehaze > 0:
+            print(f"  去雾    : {args.dehaze}")
+        if args.flat_field:
+            print(f"  平场校正: {args.flat_field}")
+    print(f"输出     : {output_dir}")
+    print()
+
+    results = process_folder(
+        input_dir, output_dir,
+        wb_mode=args.wb,
         strength=args.strength,
         brightness=args.brightness,
         contrast=args.contrast,
         saturation=args.saturation,
+        recursive=args.recursive,
+        use_pipeline=args.pipeline,
+        chroma_nr=args.chroma_nr,
+        band_nr=args.band_nr,
+        flat_field=args.flat_field,
+        dehaze=args.dehaze,
     )
 
-
-def process_single(args: argparse.Namespace) -> None:
-    logger.info("Processing: %s", args.input)
-    logger.info("  Method: %s  Strength: %.2f", args.method, args.strength)
-    if args.method == "manual":
-        logger.info("  Mask (RGB): %.3f, %.3f, %.3f", args.mask_r, args.mask_g, args.mask_b)
-
-    process_image(args.input, args.output, **_build_kwargs(args))
-
-    logger.info("Done. Output saved to: %s", args.output)
-
-
-def process_batch(args: argparse.Namespace) -> None:
-    inputs = sorted(glob.glob(args.input, recursive=True))
-    if not inputs:
-        logger.error("No files matched pattern: %s", args.input)
-        sys.exit(1)
-
-    os.makedirs(args.output, exist_ok=True)
-    logger.info("Batch processing %d files...", len(inputs))
-    kwargs = _build_kwargs(args)
-
-    for i, path in enumerate(inputs, 1):
-        name = os.path.splitext(os.path.basename(path))[0]
-        out = os.path.join(args.output, f"{name}_corrected.png")
-        try:
-            process_image(path, out, **kwargs)
-            logger.info("[%d/%d] %s -> %s", i, len(inputs), path, out)
-        except Exception as e:
-            logger.error("[%d/%d] Failed: %s - %s", i, len(inputs), path, e)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="正负逆冲 - Remove arbitrary color mask from images.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples:
-  decolor-mask photo.jpg output.jpg                              Auto (gray_world)
-  decolor-mask photo.jpg output.jpg --method white_patch         White patch
-  decolor-mask photo.jpg output.jpg --method percentile --percentile 90
-  decolor-mask photo.jpg output.jpg --method dark_pixel          Film scan mode
-  decolor-mask photo.jpg output.jpg --method manual --mask 0.85 0.55 0.28
-  decolor-mask photo.jpg output.jpg --strength 0.35              Gentle correction
-  decolor-mask "photos/*.jpg" output/ --batch                    Batch processing
-  decolor-mask photo.jpg --detect-only                           Detect mask color
-""",
-    )
-
-    parser.add_argument("input", help="Path to input image, or glob pattern with --batch")
-    parser.add_argument("output", nargs="?", default=None,
-                        help="Path to output image or directory (with --batch)")
-
-    parser.add_argument(
-        "--method", "-m",
-        choices=["gray_world", "white_patch", "percentile", "dark_pixel", "border", "manual"],
-        default="gray_world",
-        help="Mask detection method. Default: gray_world",
-    )
-    parser.add_argument(
-        "--percentile", type=float, default=95.0,
-        help="Percentile for 'percentile' method (0-100). Default: 95",
-    )
-    parser.add_argument(
-        "--border-size", type=float, default=0.05,
-        help="Border fraction for 'border' method. Default: 0.05",
-    )
-    parser.add_argument(
-        "--mask", nargs=3, type=float, metavar=("R", "G", "B"),
-        help="Manual mask color as RGB in [0, 1]. Use with --method manual.",
-    )
-    parser.add_argument(
-        "--strength", type=float, default=0.6,
-        help="Removal strength 0.0-1.0. 0=none, 1=full. Default: 0.6",
-    )
-    parser.add_argument(
-        "--brightness", "-b", type=float, default=1.0,
-        help="Brightness multiplier. Default: 1.0",
-    )
-    parser.add_argument(
-        "--contrast", "-c", type=float, default=1.0,
-        help="Contrast multiplier. Default: 1.0",
-    )
-    parser.add_argument(
-        "--saturation", "-s", type=float, default=1.0,
-        help="Saturation multiplier. Default: 1.0",
-    )
-    parser.add_argument(
-        "--detect-only", action="store_true",
-        help="Only detect and print mask color, don't process",
-    )
-    parser.add_argument(
-        "--batch", action="store_true",
-        help="Batch mode: INPUT is a glob pattern, OUTPUT is a directory",
-    )
-    parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Verbose output (debug level)",
-    )
-    parser.add_argument(
-        "--quiet", "-q", action="store_true", help="Suppress non-error output",
-    )
-
-    args = parser.parse_args()
-
-    setup_logging(verbose=args.verbose, quiet=args.quiet)
-
-    if args.method == "manual" and args.mask is None:
-        parser.error("--mask R G B is required when --method manual")
-
-    args.mask_r = args.mask_g = args.mask_b = None
-    if args.mask:
-        args.mask_r, args.mask_g, args.mask_b = args.mask
-
-    if args.batch and args.output is None:
-        parser.error("--batch requires OUTPUT to be a directory path")
-
-    if args.detect_only:
-        arr = load_image(args.input)
-        mask = estimate_color_mask(
-            arr, method=args.method, percentile=args.percentile, border_size=args.border_size,
-        )
-        r, g, b = mask
-        print(f"Mask color (R, G, B): {r:.4f}, {g:.4f}, {b:.4f}")
-        print(f"Mask color (0-255): {int(r * 255)}, {int(g * 255)}, {int(b * 255)}")
-        return
-
-    if args.batch:
-        process_batch(args)
-    else:
-        if args.output is None:
-            parser.error("OUTPUT is required (or use --batch for glob input)")
-        process_single(args)
+    print(f"\n完成! 成功 {len(results)} 个, 失败 {len(raw_files) - len(results)} 个")
+    print(f"输出目录: {output_dir}")
 
 
 if __name__ == "__main__":

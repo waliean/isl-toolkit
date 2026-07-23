@@ -2,7 +2,8 @@
 
 用法：
     双击 run.py            → 打开 GUI 图形界面
-    python run.py photo.jpg output.jpg --strength 0.6  → 命令行处理
+    python run.py .        → 批量处理当前文件夹所有RAW
+    python run.py D:\raw --strength 0.5 → 自定义强度
 """
 import sys
 
