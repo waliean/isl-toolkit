@@ -21,4 +21,4 @@ decolor-mask = "decolor_mask.cli:main"
 decolor-mask-gui = "decolor_mask.ui:main"
 
 [project.urls]
-Source = "https://github.com/waliean/positive-negative-reverse"
+Source = "https://github.com/waliean/isl-toolkit"

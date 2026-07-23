@@ -30,8 +30,8 @@ isl-toolkit/
 ## 安装
 
 ```bash
-git clone https://github.com/waliean/positive-negative-reverse.git
-cd positive-negative-reverse
+git clone https://github.com/waliean/isl-toolkit.git
+cd isl-toolkit
 pip install -e .
 ```
 
