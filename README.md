@@ -80,6 +80,15 @@ isl-toolkit ./photos --strength 0.8
 - Pillow >= 9.0.0
 - rawpy >= 0.17.0（RAW文件支持）
 
+## 反馈与捐赠
+
+- 发现问题请提交 [Issue](https://github.com/waliean/isl-toolkit/issues)
+- 或发送邮件：3221636117@qq.com
+
+欢迎投喂 ☕
+
+![收款码](mm_facetoface_collect_qrcode_1784791431933.png)
+
 ## License
 
 MIT
