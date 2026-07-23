@@ -1,5 +1,7 @@
 # ISL Toolkit — 图像处理工具箱
 
+> v2.0.0 | [下载封装版](https://github.com/waliean/isl-toolkit/releases)
+
 基于 Pentax DCU 5 / ISL (Ichikawa Soft Laboratory) 引擎架构的通用图像处理工具。
 
 > 内核 + 插件架构，当前内置 3 个功能模块，支持扩展。

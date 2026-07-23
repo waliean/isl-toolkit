@@ -1,10 +1,10 @@
-"""Build standalone executables for decolor-mask using PyInstaller.
+"""Build standalone executables for isl-toolkit using PyInstaller.
 
 Requires: pip install pyinstaller
 
 Output:
-    dist/decolor-mask.exe      CLI tool (console)
-    dist/decolor-mask-gui.exe  GUI tool (no console)
+    dist/isl-toolkit.exe      CLI tool (console)
+    dist/isl-toolkit-gui.exe  GUI tool (no console)
 """
 
 import subprocess
@@ -32,11 +32,11 @@ def build(name, entry, noconsole=False):
 
 
 def main():
-    build("decolor-mask", "decolor_mask/cli.py", noconsole=False)
-    build("decolor-mask-gui", "decolor_mask/ui.py", noconsole=True)
+    build("isl-toolkit", "decolor_mask/cli.py", noconsole=False)
+    build("isl-toolkit-gui", "decolor_mask/ui.py", noconsole=True)
     print("\nBuild complete! Output in dist/")
-    print(f"  {ROOT / 'dist' / 'decolor-mask.exe'}")
-    print(f"  {ROOT / 'dist' / 'decolor-mask-gui.exe'}")
+    print(f"  {ROOT / 'dist' / 'isl-toolkit.exe'}")
+    print(f"  {ROOT / 'dist' / 'isl-toolkit-gui.exe'}")
 
 
 if __name__ == "__main__":
