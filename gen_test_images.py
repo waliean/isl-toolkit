@@ -56,7 +56,7 @@ def main():
     print("  test_negative_scan.png - Image with cross-process color cast")
     print("\nNow run:")
     print("  python -m decolor_mask.cli test_negative_scan.png test_result.png --method gray_world --strength 0.6")
-    print("  python -m decolor_mask.cli test_negative_scan.png test_result.png --method manual --white 0.88 0.72 0.52 --strength 0.8")
+    print("  python -m decolor_mask.cli test_negative_scan.png test_result.png --method manual --mask 0.88 0.72 0.52 --strength 0.8")
 
 
 if __name__ == "__main__":

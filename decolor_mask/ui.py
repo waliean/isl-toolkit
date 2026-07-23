@@ -1,4 +1,4 @@
-"""GUI for decolor-mask: cross-process color cast correction with real-time preview.
+"""GUI for decolor-mask: remove arbitrary color mask with real-time preview.
 
 Run: python -m decolor_mask.ui
 """
@@ -14,7 +14,7 @@ from decolor_mask.core import (
     load_image,
     save_image,
     correct_cross_process,
-    estimate_white_balance,
+    estimate_color_mask,
 )
 
 MAX_PREVIEW_SIZE = 700
@@ -45,7 +45,7 @@ class _SliderRow:
         self.frame = frame
 
     def _validate(self, value):
-        if value == "" or value == "-":
+        if value in ("", "-"):
             return True
         try:
             float(value)
@@ -83,17 +83,13 @@ class _SliderRow:
     def pack_forget(self):
         self.frame.pack_forget()
 
-    def configure_state(self, state):
-        self.scale.configure(state=state)
-        self.entry.configure(state=state)
-
 
 class CrossProcessApp:
     """Main GUI application window."""
 
     def __init__(self, root):
         self.root = root
-        root.title("正负逆冲 - Cross Process Correction")
+        root.title("正负逆冲 - Remove Color Mask")
         root.geometry("1280x800")
         root.minsize(900, 600)
 
@@ -122,7 +118,7 @@ class CrossProcessApp:
 
         ttk.Label(bar, text="检测:").pack(side=tk.LEFT, padx=(0, 4))
         self.detect_btn = ttk.Button(
-            bar, text="自动检测白平衡", command=self._auto_detect, state=tk.DISABLED,
+            bar, text="自动检测色罩", command=self._auto_detect, state=tk.DISABLED,
         )
         self.detect_btn.pack(side=tk.LEFT)
 
@@ -138,7 +134,6 @@ class CrossProcessApp:
         pane.columnconfigure(1, weight=1)
         pane.rowconfigure(0, weight=1)
 
-        # original
         left = ttk.LabelFrame(pane, text="原始图像")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         left.rowconfigure(0, weight=1)
@@ -147,7 +142,6 @@ class CrossProcessApp:
         self.orig_canvas.grid(row=0, column=0, sticky="nsew")
         self._orig_tk = None
 
-        # preview
         right = ttk.LabelFrame(pane, text="预览 (实时)")
         right.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         right.rowconfigure(0, weight=1)
@@ -193,11 +187,11 @@ class CrossProcessApp:
 
         row0 = ttk.Frame(ctrl)
         row0.pack(fill=tk.X, pady=1)
-        ttk.Label(row0, text="白平衡方法:", width=14, anchor="e").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(row0, text="检测方法:", width=14, anchor="e").pack(side=tk.LEFT, padx=(0, 4))
         self.method_var = tk.StringVar(value="gray_world")
+        methods = ["gray_world", "white_patch", "percentile", "dark_pixel", "border", "manual"]
         self.method_combo = ttk.Combobox(
-            row0, textvariable=self.method_var, state="readonly", width=14,
-            values=["gray_world", "white_patch", "percentile", "manual"],
+            row0, textvariable=self.method_var, state="readonly", width=14, values=methods,
         )
         self.method_combo.pack(side=tk.LEFT)
         self.method_combo.bind("<<ComboboxSelected>>", self._on_method_change)
@@ -205,17 +199,20 @@ class CrossProcessApp:
         self.percentile_row = _SliderRow(ctrl, "  百分位 %", 1, 100, 95, command=self._update_preview, resolution=1)
         self.percentile_row.pack(fill=tk.X, pady=1)
 
+        self.border_row = _SliderRow(ctrl, "  边框比例", 0.01, 0.30, 0.05, command=self._update_preview)
+        self.border_row.pack(fill=tk.X, pady=1)
+
         self.strength_row = _SliderRow(ctrl, "纠正强度", 0.0, 1.0, 0.6, command=self._update_preview)
         self.strength_row.pack(fill=tk.X, pady=1)
 
         manual_frame = ttk.Frame(ctrl)
         self.manual_frame = manual_frame
-        self.white_r_row = _SliderRow(manual_frame, "  手动白点 R", 0.0, 1.0, 0.85, command=self._update_preview)
-        self.white_r_row.pack(fill=tk.X, pady=1)
-        self.white_g_row = _SliderRow(manual_frame, "  手动白点 G", 0.0, 1.0, 0.55, command=self._update_preview)
-        self.white_g_row.pack(fill=tk.X, pady=1)
-        self.white_b_row = _SliderRow(manual_frame, "  手动白点 B", 0.0, 1.0, 0.28, command=self._update_preview)
-        self.white_b_row.pack(fill=tk.X, pady=1)
+        self.mask_r_row = _SliderRow(manual_frame, "  色罩 R", 0.0, 1.0, 0.85, command=self._update_preview)
+        self.mask_r_row.pack(fill=tk.X, pady=1)
+        self.mask_g_row = _SliderRow(manual_frame, "  色罩 G", 0.0, 1.0, 0.55, command=self._update_preview)
+        self.mask_g_row.pack(fill=tk.X, pady=1)
+        self.mask_b_row = _SliderRow(manual_frame, "  色罩 B", 0.0, 1.0, 0.28, command=self._update_preview)
+        self.mask_b_row.pack(fill=tk.X, pady=1)
 
         self.brightness_row = _SliderRow(ctrl, "亮度", 0.1, 3.0, 1.0, command=self._update_preview)
         self.brightness_row.pack(fill=tk.X, pady=1)
@@ -254,17 +251,13 @@ class CrossProcessApp:
         path = filedialog.asksaveasfilename(
             title="保存结果",
             defaultextension=".png",
-            filetypes=[
-                ("PNG", "*.png"),
-                ("JPEG", "*.jpg *.jpeg"),
-                ("TIFF", "*.tif *.tiff"),
-                ("BMP", "*.bmp"),
-            ],
+            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg *.jpeg"),
+                       ("TIFF", "*.tif *.tiff"), ("BMP", "*.bmp")],
         )
         if not path:
             return
         try:
-            result = self._compute_correction()
+            result = correct_cross_process(self.full_image, **self._get_params())
             save_image(result, path)
             self.status_var.set(f"已保存: {os.path.basename(path)}")
         except Exception as e:
@@ -275,25 +268,21 @@ class CrossProcessApp:
     def _get_params(self):
         m = self.method_var.get()
         if m == "manual":
-            wr = self.white_r_row.var.get()
-            wg = self.white_g_row.var.get()
-            wb = self.white_b_row.var.get()
+            mr = self.mask_r_row.var.get()
+            mg = self.mask_g_row.var.get()
+            mb = self.mask_b_row.var.get()
         else:
-            wr = wg = wb = None
+            mr = mg = mb = None
         return dict(
             method=m,
             percentile=self.percentile_row.var.get(),
-            white_r=wr,
-            white_g=wg,
-            white_b=wb,
+            border_size=self.border_row.var.get(),
+            mask_r=mr, mask_g=mg, mask_b=mb,
             strength=self.strength_row.var.get(),
             brightness=self.brightness_row.var.get(),
             contrast=self.contrast_row.var.get(),
             saturation=self.saturation_row.var.get(),
         )
-
-    def _compute_correction(self):
-        return correct_cross_process(self.full_image, **self._get_params())
 
     def _update_preview(self, *_):
         if self.full_image is None:
@@ -314,7 +303,8 @@ class CrossProcessApp:
         self._updating = True
         try:
             self._render_to_canvas(self.orig_canvas, self.full_image, "_orig_tk")
-            result = correct_cross_process(self.full_image, **self._get_params())
+            params = self._get_params()
+            result = correct_cross_process(self.full_image, **params)
             self._render_to_canvas(self.prev_canvas, result, "_prev_tk")
         finally:
             self._updating = False
@@ -326,17 +316,14 @@ class CrossProcessApp:
         ch = canvas.winfo_height()
         if cw < 2 or ch < 2:
             return
-
         h, w = arr.shape[:2]
         scale = min(cw / w, ch / h, 1.0)
         new_w, new_h = int(w * scale), int(h * scale)
-
         if new_w > 0 and new_h > 0:
             img = Image.fromarray((np.clip(arr, 0, 1) * 255).astype(np.uint8))
             img = img.resize((new_w, new_h), Image.LANCZOS)
             tk_img = ImageTk.PhotoImage(img)
             setattr(self, tk_attr, tk_img)
-
             canvas.delete("all")
             canvas.create_image(cw // 2, ch // 2, image=tk_img, anchor=tk.CENTER)
 
@@ -347,33 +334,42 @@ class CrossProcessApp:
         self._update_preview()
 
     def _update_manual_visibility(self):
-        is_manual = self.method_var.get() == "manual"
-        is_percentile = self.method_var.get() == "percentile"
+        m = self.method_var.get()
+        is_manual = m == "manual"
+        is_percentile = m == "percentile"
+        is_border = m == "border"
+
         if is_manual:
             self.manual_frame.pack(fill=tk.X, pady=1, before=self.brightness_row.frame)
         else:
             self.manual_frame.pack_forget()
+
         if is_percentile:
-            self.percentile_row.pack(fill=tk.X, pady=1, before=self.strength_row.frame)
+            self.percentile_row.pack(fill=tk.X, pady=1, before=self.border_row.frame)
         else:
             self.percentile_row.pack_forget()
+
+        if is_border:
+            self.border_row.pack(fill=tk.X, pady=1, before=self.strength_row.frame)
+        else:
+            self.border_row.pack_forget()
 
     def _auto_detect(self):
         if self.full_image is None:
             return
-        method = self.method_var.get()
-        if method == "manual":
-            messagebox.showinfo("提示", "请先切换到自动方法（gray_world / white_patch / percentile）再检测。")
+        m = self.method_var.get()
+        if m == "manual":
+            messagebox.showinfo("提示", "请先切换到自动方法再检测。")
             return
-        percentile = self.percentile_row.var.get()
-        gains = estimate_white_balance(self.full_image, method=method, percentile=percentile)
-        ref = np.clip(1.0 / (gains + 1e-8), 0, 1)
-        self.white_r_row.var.set(round(float(ref[0]), 4))
-        self.white_g_row.var.set(round(float(ref[1]), 4))
-        self.white_b_row.var.set(round(float(ref[2]), 4))
+        pct = self.percentile_row.var.get()
+        bdr = self.border_row.var.get()
+        mask = estimate_color_mask(self.full_image, method=m, percentile=pct, border_size=bdr)
+        self.mask_r_row.var.set(round(float(mask[0]), 4))
+        self.mask_g_row.var.set(round(float(mask[1]), 4))
+        self.mask_b_row.var.set(round(float(mask[2]), 4))
         self.status_var.set(
-            f"检测完成: 增益 R={gains[0]:.4f} G={gains[1]:.4f} B={gains[2]:.4f}"
-            f"  |  等效白点 RGB=({ref[0]:.3f}, {ref[1]:.3f}, {ref[2]:.3f})"
+            f"检测完成: 色罩 RGB=({mask[0]:.3f}, {mask[1]:.3f}, {mask[2]:.3f})"
+            f"  |  0-255: ({int(mask[0]*255)}, {int(mask[1]*255)}, {int(mask[2]*255)})"
         )
 
     def _reset_params(self):
@@ -383,16 +379,17 @@ class CrossProcessApp:
         self.contrast_row.var.set(1.0)
         self.saturation_row.var.set(1.0)
         self.percentile_row.var.set(95)
-        self.white_r_row.var.set(0.85)
-        self.white_g_row.var.set(0.55)
-        self.white_b_row.var.set(0.28)
+        self.border_row.var.set(0.05)
+        self.mask_r_row.var.set(0.85)
+        self.mask_g_row.var.set(0.55)
+        self.mask_b_row.var.set(0.28)
         self._update_manual_visibility()
         self._update_preview()
 
 
 def main():
     root = tk.Tk()
-    app = CrossProcessApp(root)
+    CrossProcessApp(root)
     root.mainloop()
 
 

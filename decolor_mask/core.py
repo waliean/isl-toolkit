@@ -48,82 +48,93 @@ def _linear_to_rgb(arr: np.ndarray) -> np.ndarray:
     return np.where(arr <= threshold, arr * 12.92, 1.055 * (arr ** (1.0 / 2.4)) - 0.055)
 
 
-def estimate_white_balance(
+def estimate_color_mask(
     arr: np.ndarray,
     method: str = "gray_world",
     percentile: float = 95.0,
+    border_size: float = 0.05,
 ) -> np.ndarray:
-    """Estimate white balance gains from an image.
+    """Estimate the dominant color mask from an image.
 
-    Works in linear light space for physical accuracy.
+    Returns the (R, G, B) color of the mask/cast, each in [0, 1].
 
     Parameters
     ----------
-    arr : np.ndarray
-        Input RGB image as float32 in [0, 1].
     method : str
-        "gray_world" - average pixel should be neutral gray.
-        "white_patch" - brightest pixel should be white.
-        "percentile" - top percentile brightest pixels average to white.
-    percentile : float
-        Percentile for "percentile" method (0-100, default 95).
-
-    Returns
-    -------
-    np.ndarray
-        Gains (g_r, g_g, g_b) normalized so g_g = 1.0.
+        "gray_world"   - average pixel color IS the mask.
+        "white_patch"  - brightest pixel color IS the mask.
+        "percentile"   - top-N% brightest average IS the mask.
+        "dark_pixel"   - darkest 2% median IS the mask (for film scans).
+        "border"       - border region median IS the mask (for framed scans).
     """
-    arr_lin = _rgb_to_linear(arr)
-
     if method == "gray_world":
-        means = np.mean(arr_lin, axis=(0, 1))
+        mask = np.mean(arr, axis=(0, 1))
     elif method == "white_patch":
-        means = np.max(arr_lin, axis=(0, 1))
+        mask = np.max(arr, axis=(0, 1))
     elif method == "percentile":
-        flat = arr_lin.reshape(-1, 3)
-        luminance = 0.2126 * flat[:, 0] + 0.7152 * flat[:, 1] + 0.0722 * flat[:, 2]
-        n_bright = max(1, int(len(flat) * (100.0 - percentile) / 100.0))
-        bright_idx = np.argpartition(-luminance, n_bright)[:n_bright]
-        means = np.mean(flat[bright_idx], axis=0)
+        flat = arr.reshape(-1, 3)
+        lum = 0.299 * flat[:, 0] + 0.587 * flat[:, 1] + 0.114 * flat[:, 2]
+        n = max(1, int(len(flat) * (100.0 - percentile) / 100.0))
+        idx = np.argpartition(-lum, n)[:n]
+        mask = np.mean(flat[idx], axis=0)
+    elif method == "dark_pixel":
+        flat = arr.reshape(-1, 3)
+        lum = 0.299 * flat[:, 0] + 0.587 * flat[:, 1] + 0.114 * flat[:, 2]
+        n = max(1, len(flat) // 50)
+        idx = np.argpartition(lum, n)[:n]
+        mask = np.median(flat[idx], axis=0)
+    elif method == "border":
+        h, w = arr.shape[:2]
+        bh = max(1, int(h * border_size))
+        bw = max(1, int(w * border_size))
+        border = np.concatenate([
+            arr[:bh, :, :].reshape(-1, 3),
+            arr[-bh:, :, :].reshape(-1, 3),
+            arr[:, :bw, :].reshape(-1, 3),
+            arr[:, -bw:, :].reshape(-1, 3),
+        ], axis=0)
+        mask = np.median(border, axis=0)
     else:
-        raise ValueError(f"Unknown white balance method: {method}")
-
-    gains = np.where(means > 1e-8, np.mean(means) / means, 1.0)
-    gains = gains / gains[1]
-    logger.debug(
-        "White balance (%s): gains R=%.4f G=%.4f B=%.4f",
-        method, gains[0], gains[1], gains[2],
-    )
-    return gains.astype(np.float32)
+        raise ValueError(f"Unknown mask detection method: {method}")
+    mask = np.clip(mask, 1e-6, 1.0)
+    logger.debug("Mask estimate (%s): R=%.4f G=%.4f B=%.4f", method, mask[0], mask[1], mask[2])
+    return mask.astype(np.float32)
 
 
-def apply_white_balance(
+def remove_color_mask(
     arr: np.ndarray,
-    gains: np.ndarray,
+    mask_color: np.ndarray,
     strength: float = 1.0,
 ) -> np.ndarray:
-    """Apply white balance correction in linear space.
+    """Remove a color mask by dividing it out in linear space.
+
+    The "mask" is the unwanted color tint overlaid on the image.
+    Removal is done in linear light to match physical color mixing.
 
     Parameters
     ----------
     arr : np.ndarray
         Input RGB image as float32 in [0, 1].
-    gains : np.ndarray
-        White balance gains (g_r, g_g, g_b) from estimate_white_balance().
+    mask_color : np.ndarray
+        (R, G, B) color of the mask to remove, each in [0, 1].
     strength : float
-        Blend strength 0.0-1.0. 0 = no correction, 1 = full correction.
+        0.0 = no removal, 1.0 = full removal.
 
     Returns
     -------
     np.ndarray
-        White-balanced RGB image in [0, 1].
+        Corrected RGB image as float32 in [0, 1].
     """
     if strength <= 0.0:
         return arr
+    mask_color = np.clip(mask_color, 1e-6, 1.0)
     arr_lin = _rgb_to_linear(arr)
-    g = gains[np.newaxis, np.newaxis, :]
-    g = 1.0 + (g - 1.0) * strength
-    corrected = arr_lin * g
+    mask_lin = _rgb_to_linear(mask_color)
+    # normalize so neutral gray maps to neutral after division
+    mask_norm = mask_lin / np.mean(mask_lin)
+    neutral = np.ones(3, dtype=np.float32)
+    divisor = neutral + (mask_norm - neutral) * strength
+    corrected = arr_lin / divisor[np.newaxis, np.newaxis, :]
     corrected = np.clip(corrected, 0, None)
     return _linear_to_rgb(corrected)
 
@@ -132,36 +143,35 @@ def correct_cross_process(
     arr: np.ndarray,
     method: str = "gray_world",
     percentile: float = 95.0,
-    white_r: float | None = None,
-    white_g: float | None = None,
-    white_b: float | None = None,
+    border_size: float = 0.05,
+    mask_r: float | None = None,
+    mask_g: float | None = None,
+    mask_b: float | None = None,
     strength: float = 0.6,
     brightness: float = 1.0,
     contrast: float = 1.0,
     saturation: float = 1.0,
 ) -> np.ndarray:
-    """Correct the color cast of a Pentax cross-process (正负逆冲) image.
+    """Remove color mask from a cross-process styled image.
 
-    Balances colors toward natural while preserving film-like tonality.
-    Auto-detects white balance then blends with the original by a
-    controlled strength factor.
+    Detects or uses a specified mask color, removes it by division in
+    linear space, then applies brightness/contrast/saturation adjustments.
 
     Parameters
     ----------
     arr : np.ndarray
         Input RGB image as float32 in [0, 1].
     method : str
-        Auto white balance method: "gray_world", "white_patch", "percentile".
-        Ignored when manual white point is provided.
+        Mask detection method: "gray_world", "white_patch", "percentile",
+        "dark_pixel", "border". Ignored when manual mask is provided.
     percentile : float
         Percentile for "percentile" method (0-100).
-    white_r, white_g, white_b : float or None
-        Manual reference white point as RGB in [0, 1].
-        When all three are provided, overrides auto detection.
-        The reference is: "what color in the image should be white?"
+    border_size : float
+        Fraction for "border" method (0.0-1.0).
+    mask_r, mask_g, mask_b : float or None
+        Manual mask color as RGB in [0, 1]. Overrides auto detection.
     strength : float
-        Correction strength 0.0-1.0. Higher = more correction toward natural.
-        Default 0.6 preserves some cross-process character.
+        Correction strength 0.0-1.0. Default 0.6 preserves some character.
     brightness : float
         Brightness multiplier (default 1.0).
     contrast : float
@@ -174,19 +184,13 @@ def correct_cross_process(
     np.ndarray
         Corrected RGB image as float32 in [0, 1].
     """
-    if white_r is not None and white_g is not None and white_b is not None:
-        ref = np.array([white_r, white_g, white_b], dtype=np.float32)
-        ref = np.clip(ref, 1e-6, 1.0)
-        gains = np.mean(ref) / ref
-        gains = gains / gains[1]
-        logger.debug(
-            "Manual white reference: RGB=%.4f,%.4f,%.4f gains=%.4f,%.4f,%.4f",
-            white_r, white_g, white_b, gains[0], gains[1], gains[2],
-        )
+    if mask_r is not None and mask_g is not None and mask_b is not None:
+        mask_color = np.array([mask_r, mask_g, mask_b], dtype=np.float32)
+        logger.debug("Manual mask: RGB=%.4f,%.4f,%.4f", mask_r, mask_g, mask_b)
     else:
-        gains = estimate_white_balance(arr, method, percentile)
+        mask_color = estimate_color_mask(arr, method, percentile, border_size)
 
-    result = apply_white_balance(arr, gains, strength)
+    result = remove_color_mask(arr, mask_color, strength)
 
     if contrast != 1.0:
         result = (result - 0.5) * contrast + 0.5
@@ -207,26 +211,25 @@ def process_image(
     output_path: str,
     method: str = "gray_world",
     percentile: float = 95.0,
-    white_r: float | None = None,
-    white_g: float | None = None,
-    white_b: float | None = None,
+    border_size: float = 0.05,
+    mask_r: float | None = None,
+    mask_g: float | None = None,
+    mask_b: float | None = None,
     strength: float = 0.6,
     brightness: float = 1.0,
     contrast: float = 1.0,
     saturation: float = 1.0,
 ) -> np.ndarray:
-    """Load, correct cross-process color cast, and save.
-
-    Parameters match correct_cross_process().
-    """
+    """Load, remove color mask, and save.  Parameters match correct_cross_process."""
     arr = load_image(input_path)
     result = correct_cross_process(
         arr,
         method=method,
         percentile=percentile,
-        white_r=white_r,
-        white_g=white_g,
-        white_b=white_b,
+        border_size=border_size,
+        mask_r=mask_r,
+        mask_g=mask_g,
+        mask_b=mask_b,
         strength=strength,
         brightness=brightness,
         contrast=contrast,

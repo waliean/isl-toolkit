@@ -1,8 +1,8 @@
 from .core import (
     load_image,
     save_image,
-    estimate_white_balance,
-    apply_white_balance,
+    estimate_color_mask,
+    remove_color_mask,
     correct_cross_process,
     process_image,
 )
@@ -10,8 +10,8 @@ from .core import (
 __all__ = [
     "load_image",
     "save_image",
-    "estimate_white_balance",
-    "apply_white_balance",
+    "estimate_color_mask",
+    "remove_color_mask",
     "correct_cross_process",
     "process_image",
 ]
