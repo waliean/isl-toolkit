@@ -1,6 +1,10 @@
 """Build standalone executables for isl-toolkit using PyInstaller.
 
-Requires: pip install pyinstaller
+Requires: pip install pyinstaller pyopencl
+
+The resulting .exe bundles pyopencl — no Python/pip install needed on target machine.
+GPU acceleration uses the system's OpenCL.dll (provided by GPU driver).
+If no GPU driver found, falls back to CPU automatically.
 
 Output:
     dist/isl-toolkit.exe      CLI tool (console)
@@ -21,6 +25,9 @@ def build(name, entry, noconsole=False):
         "--name", name,
         "--distpath", str(ROOT / "dist"),
         "--paths", str(ROOT),
+        "--hidden-import", "pyopencl",
+        "--hidden-import", "pyopencl._cl",
+        "--hidden-import", "pyopencl.cache",
         str(ROOT / entry),
     ]
     if noconsole:
@@ -32,8 +39,8 @@ def build(name, entry, noconsole=False):
 
 
 def main():
-    build("isl-toolkit", "decolor_mask/cli.py", noconsole=False)
-    build("isl-toolkit-gui", "decolor_mask/ui.py", noconsole=True)
+    build("isl-toolkit", "entry_cli.py", noconsole=False)
+    build("isl-toolkit-gui", "entry_gui.py", noconsole=True)
     print("\nBuild complete! Output in dist/")
     print(f"  {ROOT / 'dist' / 'isl-toolkit.exe'}")
     print(f"  {ROOT / 'dist' / 'isl-toolkit-gui.exe'}")

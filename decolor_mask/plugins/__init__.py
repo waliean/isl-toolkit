@@ -1,8 +1,9 @@
 """插件注册表。"""
 from .base import PluginBase
+from .cross_process import CrossProcessPlugin
 from .film_inversion import FilmInversionPlugin
 from .image_enhance import ImageEnhancePlugin
-from .noise_reduction import NoiseReductionPlugin
+from .filter_pipeline import FilterPipelinePlugin
 
 _registry: dict[str, PluginBase] = {}
 
@@ -21,6 +22,7 @@ def list_all() -> list[PluginBase]:
 
 
 # 注册内置插件
+register(CrossProcessPlugin())
 register(FilmInversionPlugin())
 register(ImageEnhancePlugin())
-register(NoiseReductionPlugin())
+register(FilterPipelinePlugin())

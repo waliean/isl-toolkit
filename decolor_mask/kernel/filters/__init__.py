@@ -11,6 +11,8 @@ from .color import (
 )
 from .noise import CromaNRFilter, BandNRFilter
 from .geometry import FlatFieldFilter
+from .dcu_legacy import SmartSharpFilter, ClarityFilter, BWFilterSim, ToningFilter
+from .creative import VignetteFilter, GrainFilter, ToneCurveFilter, ShadowBoostFilter
 
 __all__ = [
     "BaseFilter", "FilterStage",
@@ -23,4 +25,12 @@ __all__ = [
     "CromaNRFilter",
     "BandNRFilter",
     "FlatFieldFilter",
+    "SmartSharpFilter",
+    "ClarityFilter",
+    "BWFilterSim",
+    "ToningFilter",
+    "VignetteFilter",
+    "GrainFilter",
+    "ToneCurveFilter",
+    "ShadowBoostFilter",
 ]

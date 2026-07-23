@@ -2,7 +2,7 @@
 
 用法：
     双击 run.py            → 打开 GUI 图形界面
-    python run.py .        → 批量处理当前文件夹所有RAW
+    python run.py .        → 批量导出当前文件夹所有 RAW
     python run.py D:\raw --strength 0.5 → 自定义强度
 """
 import sys

@@ -242,40 +242,43 @@ class DehazeFilter(BaseFilter):
         self.window_size = window_size
 
     def apply(self, image: np.ndarray, preview: bool = False) -> np.ndarray:
+        from ..gpu import sep_min as _gpu_sep_min, sep_mean as _gpu_sep_mean
+        from ..gpu import is_available as _gpu_avail
+
         ws = max(3, self.window_size // 3) if preview else self.window_size
         r = ws // 2
 
-        # 暗通道（每像素取 RGB 最小值）
         dark = np.min(image, axis=-1)
 
-        # 局部最小值（近似暗通道先验）
-        padded = np.pad(dark, ((r, r), (r, r)), mode='edge')
-        dark_channel = np.zeros_like(dark)
-        for i in range(image.shape[0]):
-            for j in range(image.shape[1]):
-                dark_channel[i, j] = np.min(padded[i:i + ws, j:j + ws])
+        if _gpu_avail():
+            dark_channel = _gpu_sep_min(dark, r)
+        else:
+            from numpy.lib.stride_tricks import sliding_window_view
+            padded = np.pad(dark, ((0, 0), (r, r)), mode='edge')
+            windows = sliding_window_view(padded, ws, axis=1)
+            h_min = np.min(windows, axis=-1)
+            padded = np.pad(h_min, ((r, r), (0, 0)), mode='edge')
+            windows = sliding_window_view(padded, ws, axis=0)
+            dark_channel = np.min(windows, axis=-1)
 
-        # 大气光估计
-        atm_light_val = np.percentile(dark_channel, 95)
+        atm_light_val = float(np.percentile(dark_channel, 95))
 
-        # 透射率
         omega = 0.95 * self.strength
         transmission = 1.0 - omega * (dark_channel / max(atm_light_val, 0.001))
         transmission = np.clip(transmission, 0.1, 1.0)
 
-        # 简易引导滤波（Box blur 近似）
-        kernel = np.ones((ws, ws), dtype=np.float32) / (ws * ws)
-        padded_t = np.pad(transmission, ((r, r), (r, r)), mode='edge')
-        transmission_smooth = np.zeros_like(transmission)
-        for i in range(transmission.shape[0]):
-            for j in range(transmission.shape[1]):
-                transmission_smooth[i, j] = np.sum(padded_t[i:i + ws, j:j + ws] * kernel)
-        transmission = np.clip(transmission_smooth, 0.1, 1.0)
+        if _gpu_avail():
+            transmission = _gpu_sep_mean(transmission, r)
+        else:
+            from numpy.lib.stride_tricks import sliding_window_view
+            padded = np.pad(transmission, ((0, 0), (r, r)), mode='edge')
+            windows = sliding_window_view(padded, ws, axis=1)
+            h_mean = np.mean(windows, axis=-1)
+            padded = np.pad(h_mean, ((r, r), (0, 0)), mode='edge')
+            windows = sliding_window_view(padded, ws, axis=0)
+            transmission = np.mean(windows, axis=-1)
+        transmission = np.clip(transmission, 0.1, 1.0)
 
-        # 去雾
-        result = np.zeros_like(image)
-        for c in range(3):
-            result[..., c] = (image[..., c] - atm_light_val) / np.maximum(transmission, 0.1) + atm_light_val
-
+        result = (image - atm_light_val) / np.maximum(transmission[..., np.newaxis], 0.1) + atm_light_val
         result = np.clip(result, 0.0, 1.0)
         return self.blend(image, result)

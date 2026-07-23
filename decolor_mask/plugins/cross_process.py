@@ -1,19 +1,19 @@
-"""负片反转 (Film Inversion) — 黑白负片扫描件转正片功能插件。
+"""正负逆冲 (Cross Process) — WB混合交叉冲洗功能插件。
 
-使用 LCC 亮度-色度分离空间进行反转，支持平场校正 (FlatField) 消除照明不均。
+使用相机白平衡 (Camera WB) 与目标白平衡 (Target WB) 按强度混合，产生色彩偏移效果。
 """
 
 import argparse
 
 from .base import PluginBase
-from ..kernel import ProcessingPipeline, LCCInverter, FlatFieldFilter
+from ..kernel import ProcessingPipeline
 
 
-class FilmInversionPlugin(PluginBase):
-    """负片反转 (Film Inversion) 插件 — 将负片扫描件转换为正片图像。"""
+class CrossProcessPlugin(PluginBase):
+    """正负逆冲 (Cross Process) 插件：相机WB与目标WB按强度混合。"""
 
-    name = "film"
-    title = "负片反转"
+    name = "cross"
+    title = "正负逆冲"
     icon = "🎞"
 
     def __init__(self):
@@ -22,17 +22,7 @@ class FilmInversionPlugin(PluginBase):
         self._enabled_cb = None
 
     def build_pipeline(self, **params) -> ProcessingPipeline:
-        pipe = ProcessingPipeline(preview_scale=0.25)
-        strength = params.get("strength", 0.8)
-        flat_field = params.get("flat_field", None)
-
-        if flat_field:
-            pipe.add_frontend(FlatFieldFilter(flat_frame_path=flat_field, strength=1.0))
-        else:
-            pipe.add_frontend(FlatFieldFilter(strength=0.5))
-
-        pipe.add_core(LCCInverter(strength=strength))
-        return pipe
+        return ProcessingPipeline(preview_scale=0.25)
 
     def is_enabled(self) -> bool:
         if self._enabled_cb is not None:
@@ -44,12 +34,12 @@ class FilmInversionPlugin(PluginBase):
             self._enabled_cb.setChecked(value)
 
     def attach_ui(self, parent, on_change=None) -> None:
-        from PySide6.QtWidgets import QCheckBox, QComboBox, QVBoxLayout, QLabel, QWidget, QHBoxLayout, QFrame
+        from PySide6.QtWidgets import QCheckBox, QComboBox, QVBoxLayout, QLabel, QFrame
         from PySide6.QtCore import Qt
         from ..ui.widgets import SliderRow, _Var
         self._on_change = on_change
 
-        self._enabled_cb = QCheckBox("启用 — 负片反转 (Film Inversion)")
+        self._enabled_cb = QCheckBox("启用 — 正负逆冲 (Cross Process)")
         self._enabled_cb.setChecked(False)
         self._enabled_cb.toggled.connect(lambda: self._notify())
         parent.layout().addWidget(self._enabled_cb)
@@ -62,6 +52,7 @@ class FilmInversionPlugin(PluginBase):
         card_layout.setSpacing(6)
 
         # 白平衡选择行
+        from PySide6.QtWidgets import QWidget, QHBoxLayout
         wb_row = QWidget()
         wb_layout = QHBoxLayout(wb_row)
         wb_layout.setContentsMargins(0, 2, 0, 2)
@@ -85,8 +76,8 @@ class FilmInversionPlugin(PluginBase):
         card_layout.addWidget(wb_row)
         self._ui_vars["wb_mode"] = self._wb_var
 
-        # 反转强度滑块
-        row = SliderRow("反转强度 (Strength)", 0.0, 1.0, 0.8, resolution=0.01)
+        # 强度滑块
+        row = SliderRow("混合强度 (Strength)", 0.0, 1.0, 0.8, resolution=0.01)
         row.value_changed.connect(lambda v: self._notify())
         card_layout.addWidget(row)
         self._ui_vars["strength"] = row.var
@@ -97,7 +88,7 @@ class FilmInversionPlugin(PluginBase):
         sep.setFrameShadow(QFrame.Sunken)
         card_layout.addWidget(sep)
 
-        desc = QLabel("负片反转 (Film Inversion)：\n将黑白负片扫描件通过 LCC 空间\n亮度-色度分离反转算法转为正片。")
+        desc = QLabel("正负逆冲 (Cross Process)：\n相机白平衡 (Camera WB) 与目标白平衡 (Target WB)\n按强度混合，产生色彩偏移效果。")
         desc.setWordWrap(True)
         card_layout.addWidget(desc)
 
@@ -114,12 +105,10 @@ class FilmInversionPlugin(PluginBase):
         parser.add_argument("--wb", choices=["auto", "camera", "daylight"], default="auto",
                             help="目标白平衡 (WB) 模式: auto/camera/daylight")
         parser.add_argument("--strength", "-s", type=float, default=0.8,
-                            help="反转强度 (Strength) 0.0-1.0")
-        parser.add_argument("--flat-field", type=str, default=None,
-                            help="平场校正 (FlatField) 白帧参考图路径")
+                            help="混合强度 (Strength) 0.0-1.0")
 
     def get_cli_kwargs(self, args) -> dict:
-        return {"wb_mode": args.wb, "strength": args.strength, "flat_field": args.flat_field}
+        return {"wb_mode": args.wb, "strength": args.strength}
 
     def _notify(self):
         if self._on_change:

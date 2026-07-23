@@ -15,4 +15,12 @@ from .filters import (
     CromaNRFilter,
     BandNRFilter,
     FlatFieldFilter,
+    SmartSharpFilter,
+    ClarityFilter,
+    BWFilterSim,
+    ToningFilter,
+    VignetteFilter,
+    GrainFilter,
+    ToneCurveFilter,
+    ShadowBoostFilter,
 )
