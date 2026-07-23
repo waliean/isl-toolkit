@@ -106,10 +106,10 @@ def remove_color_mask(
     mask_color: np.ndarray,
     strength: float = 1.0,
 ) -> np.ndarray:
-    """Remove a color mask by dividing it out in linear space.
+    """Remove a color mask by applying per-channel gains in linear space.
 
     The "mask" is the unwanted color tint overlaid on the image.
-    Removal is done in linear light to match physical color mixing.
+    A pixel with exactly mask_color will become neutral gray at full strength.
 
     Parameters
     ----------
@@ -130,12 +130,17 @@ def remove_color_mask(
     mask_color = np.clip(mask_color, 1e-6, 1.0)
     arr_lin = _rgb_to_linear(arr)
     mask_lin = _rgb_to_linear(mask_color)
-    # normalize so neutral gray maps to neutral after division
-    mask_norm = mask_lin / np.mean(mask_lin)
-    neutral = np.ones(3, dtype=np.float32)
-    divisor = neutral + (mask_norm - neutral) * strength
-    corrected = arr_lin / divisor[np.newaxis, np.newaxis, :]
+
+    # Gains to bring mask color to neutral gray (same luminance).
+    neutral_lum = np.mean(mask_lin)
+    gains = neutral_lum / mask_lin
+
+    # Interpolate gains toward identity (1,1,1), NOT divisor.
+    effective_gains = 1.0 + (gains - 1.0) * strength
+
+    corrected = arr_lin * effective_gains[np.newaxis, np.newaxis, :]
     corrected = np.clip(corrected, 0, None)
+
     return _linear_to_rgb(corrected)
 
 
