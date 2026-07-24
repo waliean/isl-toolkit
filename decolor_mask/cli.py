@@ -83,8 +83,8 @@ def main() -> None:
         help="强度 (Strength) 0.0-1.0 (cross模式:WB混合度, invert模式:反转强度). 默认: 0.8",
     )
     parser.add_argument(
-        "--wb", choices=["auto", "camera", "daylight"], default="auto",
-        help="目标白平衡 (WB) 模式. 默认: auto",
+        "--wb", choices=["auto", "camera", "daylight"], default="daylight",
+        help="目标白平衡 (WB) 模式. 默认: daylight",
     )
     parser.add_argument(
         "--brightness", "-b", type=float, default=1.0,

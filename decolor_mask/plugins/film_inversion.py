@@ -72,10 +72,10 @@ class FilmInversionPlugin(PluginBase):
         wb_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         wb_layout.addWidget(wb_label)
 
-        self._wb_var = _Var("auto")
+        self._wb_var = _Var("daylight")
         wb = QComboBox()
         wb.addItems(["auto", "camera", "daylight"])
-        wb.setCurrentText("auto")
+        wb.setCurrentText("daylight")
         wb.currentTextChanged.connect(lambda text: (
             self._wb_var.set(text), self._notify()
         ))
@@ -111,8 +111,8 @@ class FilmInversionPlugin(PluginBase):
 
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--wb", choices=["auto", "camera", "daylight"], default="auto",
-                            help="目标白平衡 (WB) 模式: auto/camera/daylight")
+        parser.add_argument("--wb", choices=["auto", "camera", "daylight"], default="daylight",
+                            help="目标白平衡 (WB) 模式: daylight/camera/auto")
         parser.add_argument("--strength", "-s", type=float, default=0.8,
                             help="反转强度 (Strength) 0.0-1.0")
         parser.add_argument("--flat-field", type=str, default=None,

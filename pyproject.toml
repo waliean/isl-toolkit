@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "isl-toolkit"
-version = "1.0.1"
+version = "1.0.2"
 description = "通用图像处理工具箱 — 基于 ISL 引擎架构，含负片反转、降噪、去雾、图像增强。"
 requires-python = ">=3.10"
 license = { text = "MIT" }

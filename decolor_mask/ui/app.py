@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
     QComboBox,
 )
 
-from ..core import find_raw_files, process_raw, _apply_postprocess, RAW_EXTENSIONS
+from ..core import find_raw_files, process_raw, _apply_postprocess, _render_raw_from_obj, RAW_EXTENSIONS
 from ..kernel.gpu import get_status_text
 from ..plugins import list_all
 from ..session import load as session_load, save as session_save
@@ -742,7 +742,11 @@ class ImageToolkitApp(QMainWindow):
         self._render_to_all_viewers(result)
 
     def _compute_chain(self, cam_snap: np.ndarray, tgt_snap: np.ndarray):
-        """链式处理：cross|film → filters → enhance。"""
+        """链式处理：cross|film → filters → enhance。
+
+        预览与导出共用相同的管线构建逻辑 (_build_save_pipeline /
+        _build_enhance_save_pipeline)，仅 preview=True 作为差异。
+        """
         cam = cam_snap.astype(np.float32) / 255.0
         tgt = tgt_snap.astype(np.float32) / 255.0
         result = cam.copy()
@@ -752,8 +756,13 @@ class ImageToolkitApp(QMainWindow):
         filters = self._plugin_map.get("filters")
         enhance = self._plugin_map.get("enhance")
 
+        use_cross = cross and cross.is_enabled()
+        use_film = film and film.is_enabled()
+        use_filters = filters and filters.is_enabled()
+        use_enhance = enhance and enhance.is_enabled()
+
         # Stage 1: cross 或 film（互斥）
-        if cross and cross.is_enabled():
+        if use_cross:
             cp = cross.get_params()
             strength = cp.get("strength", 0.8)
             if strength >= 1.0:
@@ -762,14 +771,14 @@ class ImageToolkitApp(QMainWindow):
                 result = cam.copy()
             else:
                 result = cam * (1.0 - strength) + tgt * strength
-        elif film and film.is_enabled():
+        elif use_film:
             from ..kernel.filters.color import LCCInverter
             from ..kernel.filters.geometry import FlatFieldFilter
             fp = film.get_params()
             strength = fp.get("strength", 0.8)
             # Flat field strength: prefer filters' setting if enabled, else film default 0.5
             ff_strength = 0.5
-            if filters and filters.is_enabled():
+            if use_filters:
                 fparams = filters.get_params()
                 ffs = fparams.get("flat_field_strength", 0)
                 if ffs > 0.01:
@@ -779,88 +788,35 @@ class ImageToolkitApp(QMainWindow):
             else:
                 result = tgt.copy()
             result = LCCInverter(strength=strength).apply(result, preview=True)
+        else:
+            result = tgt.copy()  # 非 cross/film: 以 daylight 为基底，与导出一致
 
-        # Stage 2: 滤镜处理（降噪/去雾/平场/B&W滤镜/颗粒）
-        if filters and filters.is_enabled():
-            # 如果 film 已启用，平场已在 Stage 1 应用，避免重复
-            skip_ff = film and film.is_enabled()
-            result = self._apply_filters_preview(result, filters.get_params(),
-                                                  skip_flat_field=skip_ff)
+        # Stage 2: 滤镜处理（复用导出管线构建逻辑）
+        if use_filters:
+            filters_params = filters.get_params()
+            f_pipe = self._build_save_pipeline(
+                use_film=use_film,
+                use_filters=True,
+                film_params=film.get_params() if use_film else {},
+                filters_params=filters_params,
+            )
+            # 若 film 已在 Stage 1 处理过 FlatField 和 LCCInverter，移除重复
+            if use_film:
+                f_pipe.remove("FlatField")
+                f_pipe.remove("LCCInverter")
+            result = f_pipe.run(result, preview=True)
 
-        # Stage 3: 图像增强（亮度/对比度/饱和度 + 锐化/清晰度/暗角/暗部增强/色调曲线）
-        if enhance and enhance.is_enabled():
+        # Stage 3: 图像增强（复用导出管线构建逻辑）
+        if use_enhance:
             ep = enhance.get_params()
-            result = self._apply_enhance_preview(result, ep)
+            enhance_pipe = self._build_enhance_save_pipeline(ep)
+            result = enhance_pipe.run(result, preview=True)
             result = _apply_postprocess(result,
                                         ep.get("brightness", 1.0),
                                         ep.get("contrast", 1.0),
                                         ep.get("saturation", 1.0))
 
         return result
-
-    @staticmethod
-    def _apply_filters_preview(image: np.ndarray, params: dict,
-                               skip_flat_field: bool = False) -> np.ndarray:
-        """预览链：仅滤镜处理（降噪/去雾/平场/B&W滤镜/颗粒/色调映射）。"""
-        from ..kernel.filters.color import DehazeFilter
-        from ..kernel.filters.noise import CromaNRFilter, BandNRFilter
-        from ..kernel.filters.geometry import FlatFieldFilter
-        from ..kernel.filters.dcu_legacy import BWFilterSim, ToningFilter
-        from ..kernel.filters.creative import GrainFilter
-
-        rgb = image
-        chroma_nr = params.get("chroma_nr", 0)
-        band_nr = params.get("band_nr", 0)
-        flat_strength = params.get("flat_field_strength", 0)
-        bw_filter = params.get("bw_filter", "none")
-        bw_filter_strength = params.get("bw_filter_strength", 1.0)
-        dehaze = params.get("dehaze", 0)
-        grain = params.get("grain", 0)
-        toning = params.get("toning", "none")
-
-        if chroma_nr > 0.01:
-            rgb = CromaNRFilter(strength=chroma_nr).apply(rgb, preview=True)
-        if band_nr > 0.01:
-            rgb = BandNRFilter(strength=band_nr).apply(rgb, preview=True)
-        if flat_strength > 0.01 and not skip_flat_field:
-            rgb = FlatFieldFilter(strength=flat_strength).apply(rgb, preview=True)
-        if bw_filter != "none":
-            rgb = BWFilterSim(filter_type=bw_filter, strength=bw_filter_strength).apply(rgb, preview=True)
-        if dehaze > 0.01:
-            rgb = DehazeFilter(strength=dehaze).apply(rgb, preview=True)
-        if grain > 0.01:
-            rgb = GrainFilter(strength=grain).apply(rgb, preview=True)
-        if toning != "none":
-            rgb = ToningFilter(preset=toning, strength=0.7).apply(rgb, preview=True)
-        return rgb
-
-    @staticmethod
-    def _apply_enhance_preview(image: np.ndarray, params: dict) -> np.ndarray:
-        """预览链：仅增强处理（锐化/清晰度/暗角/暗部增强/色调曲线）。"""
-        from ..kernel.filters.dcu_legacy import SmartSharpFilter, ClarityFilter
-        from ..kernel.filters.creative import VignetteFilter, ToneCurveFilter, ShadowBoostFilter
-
-        rgb = image
-        clarity = params.get("clarity", 0)
-        smart_sharp = params.get("smart_sharp", 0)
-        vignette = params.get("vignette", 0)
-        shadow_boost = params.get("shadow_boost", 0)
-        highlights = params.get("highlights", 0)
-        shadows = params.get("shadows", 0)
-        midtones = params.get("midtones", 0)
-
-        if clarity > 0.01:
-            rgb = ClarityFilter(strength=clarity).apply(rgb, preview=True)
-        if highlights != 0.0 or shadows != 0.0 or midtones != 0.0:
-            rgb = ToneCurveFilter(highlights=highlights, shadows=shadows,
-                                  midtones=midtones).apply(rgb, preview=True)
-        if shadow_boost > 0.01:
-            rgb = ShadowBoostFilter(strength=shadow_boost).apply(rgb, preview=True)
-        if smart_sharp > 0.01:
-            rgb = SmartSharpFilter(strength=smart_sharp).apply(rgb, preview=True)
-        if vignette > 0.01:
-            rgb = VignetteFilter(strength=vignette).apply(rgb, preview=True)
-        return rgb
 
     # ═══════════════════════════════════════════════════════
     #  渲染到所有预览控件
@@ -957,10 +913,11 @@ class ImageToolkitApp(QMainWindow):
             try:
                 raw = rawpy.imread(path)
                 try:
-                    pp = dict(output_color=rawpy.ColorSpace.sRGB, gamma=(2.222, 4.5),
-                              no_auto_bright=True, bright=1.0, half_size=True)
-                    cam_render = raw.postprocess(use_camera_wb=True, **pp)
-                    tgt_render = raw.postprocess(use_camera_wb=False, use_auto_wb=True, **pp)
+                    cam_render = _render_raw_from_obj(raw, "camera", half_size=True)
+                    tgt_render = _render_raw_from_obj(raw, "daylight", half_size=True)
+                    # Convert back to uint8 for UI compatibility
+                    cam_render = np.clip(cam_render * 255, 0, 255).astype(np.uint8)
+                    tgt_render = np.clip(tgt_render * 255, 0, 255).astype(np.uint8)
                 finally:
                     raw.close()
                 self._signals.load_done.emit(path, cam_render, tgt_render)
@@ -1014,13 +971,13 @@ class ImageToolkitApp(QMainWindow):
 
         # wb_mode/strength: only read from the plugin that is actually enabled
         if use_film:
-            wb_mode = film_params.get("wb_mode", "auto")
+            wb_mode = film_params.get("wb_mode", "daylight")
             strength = film_params.get("strength", 0.8)
         elif use_cross:
-            wb_mode = cross_params.get("wb_mode", "auto")
+            wb_mode = cross_params.get("wb_mode", "daylight")
             strength = cross_params.get("strength", 0.8)
         else:
-            wb_mode = "auto"
+            wb_mode = "daylight"
             strength = 0.8
         brightness = enhance_params.get("brightness", 1.0) if use_enhance else 1.0
         contrast = enhance_params.get("contrast", 1.0) if use_enhance else 1.0
@@ -1042,7 +999,7 @@ class ImageToolkitApp(QMainWindow):
                         self._build_enhance_save_pipeline(enhance_params)
                         if use_enhance else None
                     )
-                    proc_wb = film_params.get("wb_mode", "auto") if use_film else wb_mode
+                    proc_wb = film_params.get("wb_mode", "daylight") if use_film else wb_mode
                     proc_strength = film_params.get("strength", 0.8) if use_film else 0.0
                     process_raw(self._preview_path, output_path,
                                 wb_mode=proc_wb, strength=proc_strength, pipeline=pipeline,
@@ -1054,7 +1011,7 @@ class ImageToolkitApp(QMainWindow):
                         if use_enhance else None
                     )
                     process_raw(self._preview_path, output_path,
-                                wb_mode="auto", strength=1.0,
+                                wb_mode="daylight", strength=1.0,
                                 post_pipeline=post_pipeline,
                                 brightness=brightness, contrast=contrast, saturation=saturation)
                 self._signals.process_done.emit(output_path, "")
@@ -1206,13 +1163,13 @@ class ImageToolkitApp(QMainWindow):
 
         # wb_mode/strength: only read from the plugin that is actually enabled
         if use_film:
-            wb_mode = film_params.get("wb_mode", "auto")
+            wb_mode = film_params.get("wb_mode", "daylight")
             strength = film_params.get("strength", 0.8)
         elif use_cross:
-            wb_mode = cross_params.get("wb_mode", "auto")
+            wb_mode = cross_params.get("wb_mode", "daylight")
             strength = cross_params.get("strength", 0.8)
         else:
-            wb_mode = "auto"
+            wb_mode = "daylight"
             strength = 0.8
         brightness = enhance_params.get("brightness", 1.0) if use_enhance else 1.0
         contrast = enhance_params.get("contrast", 1.0) if use_enhance else 1.0
@@ -1259,7 +1216,7 @@ class ImageToolkitApp(QMainWindow):
                                     brightness=brightness, contrast=contrast,
                                     saturation=saturation)
                     else:
-                        process_raw(path, out, wb_mode="auto", strength=1.0,
+                        process_raw(path, out, wb_mode="daylight", strength=1.0,
                                     post_pipeline=post_pipeline,
                                     brightness=brightness, contrast=contrast,
                                     saturation=saturation)

@@ -68,13 +68,25 @@ def _apply_postprocess(
     return np.clip(arr, 0, 1)
 
 
-def _render_raw(raw, wb_mode: str, half_size: bool = False) -> np.ndarray:
-    pp_kwargs = dict(
+# ── 共享 RAW 渲染参数 ──────────────────────────────────────────
+
+def _default_pp_kwargs():
+    """返回默认 postprocess 参数（延迟引用 rawpy，避免 import 时缺失）。"""
+    return dict(
         output_color=rawpy.ColorSpace.sRGB,
         gamma=(2.222, 4.5),
         no_auto_bright=True,
         bright=1.0,
     )
+
+
+def _render_raw_from_obj(raw, wb_mode: str, half_size: bool = False) -> np.ndarray:
+    """从 rawpy 对象渲染线性 RGB（共享 daylight fallback）。
+
+    UI 预览加载与 process_raw 共用此函数，
+    确保 pp 参数和 daylight fallback exception 范围一致。
+    """
+    pp_kwargs = _default_pp_kwargs()
     if half_size:
         pp_kwargs["half_size"] = True
 
@@ -95,6 +107,11 @@ def _render_raw(raw, wb_mode: str, half_size: bool = False) -> np.ndarray:
     return rgb.astype(np.float32) / 255.0
 
 
+def _render_raw(raw, wb_mode: str, half_size: bool = False) -> np.ndarray:
+    """从 rawpy 文件路径渲染（内部调用 _render_raw_from_obj）。"""
+    return _render_raw_from_obj(raw, wb_mode, half_size)
+
+
 # ============================================================
 #  process_raw — 统一处理单张RAW文件
 # ============================================================
@@ -102,7 +119,7 @@ def _render_raw(raw, wb_mode: str, half_size: bool = False) -> np.ndarray:
 def process_raw(
     input_path: str,
     output_path: str | None = None,
-    wb_mode: str = "auto",
+    wb_mode: str = "daylight",
     strength: float = 0.8,
     pipeline: "ProcessingPipeline | None" = None,
     post_pipeline: "ProcessingPipeline | None" = None,
@@ -126,46 +143,20 @@ def process_raw(
     raw = rawpy.imread(input_path)
     try:
         if pipeline is not None:
-            rgb = _render_raw(raw, wb_mode, half_size)
+            rgb = _render_raw_from_obj(raw, wb_mode, half_size)
             result = pipeline.run(rgb, preview=half_size)
         else:
-            pp_kwargs = dict(
-                output_color=rawpy.ColorSpace.sRGB,
-                gamma=(2.222, 4.5),
-                no_auto_bright=True,
-                bright=1.0,
-            )
-            if half_size:
-                pp_kwargs["half_size"] = True
-
-            rgb_camera = raw.postprocess(use_camera_wb=True, **pp_kwargs)
+            rgb_camera = _render_raw_from_obj(raw, "camera", half_size)
 
             if wb_mode == "camera" or strength <= 0.0:
-                result_rgb = rgb_camera
+                result = rgb_camera
             else:
-                if wb_mode == "auto":
-                    rgb_target = raw.postprocess(use_camera_wb=False, use_auto_wb=True, **pp_kwargs)
-                elif wb_mode == "daylight":
-                    try:
-                        dl_wb = raw.daylight_whitebalance
-                    except AttributeError:
-                        logger.warning("相机不支持读取日光白平衡，回退到 auto WB")
-                        rgb_target = raw.postprocess(use_camera_wb=False, use_auto_wb=True, **pp_kwargs)
-                    else:
-                        rgb_target = raw.postprocess(use_camera_wb=False, user_wb=dl_wb, **pp_kwargs)
-                else:
-                    raise ValueError(f"Unknown wb_mode: {wb_mode}")
-
+                rgb_target = _render_raw_from_obj(raw, wb_mode, half_size)
                 if strength >= 1.0:
-                    result_rgb = rgb_target
+                    result = rgb_target
                 else:
-                    result_rgb = (
-                        rgb_camera.astype(np.float32) * (1.0 - strength)
-                        + rgb_target.astype(np.float32) * strength
-                    )
-                    result_rgb = np.clip(result_rgb, 0, 255).astype(np.uint8)
-
-            result = result_rgb.astype(np.float32) / 255.0
+                    result = rgb_camera * (1.0 - strength) + rgb_target * strength
+                    result = np.clip(result, 0.0, 1.0)
 
         if post_pipeline is not None:
             result = post_pipeline.run(result, preview=half_size)
@@ -186,7 +177,7 @@ def process_raw(
 def process_folder(
     input_dir: str,
     output_dir: str,
-    wb_mode: str = "auto",
+    wb_mode: str = "daylight",
     strength: float = 0.8,
     brightness: float = 1.0,
     contrast: float = 1.0,

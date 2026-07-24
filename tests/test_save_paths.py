@@ -3,9 +3,9 @@
 Verifies:
 - Cross mode calls process_raw with a post_pipeline containing both
   filters and enhance pipe filters (non-empty).
-- Filters-only path does NOT pick up cross's wb_mode (stays "auto").
+- Filters-only path does NOT pick up cross's wb_mode (stays "daylight").
 - Batch else branch (enhance-only / empty pipeline fallback) passes
-  wb_mode="auto", strength=1.0 to process_raw.
+  wb_mode="daylight", strength=1.0 to process_raw.
 
 Each test creates a fresh ImageToolkitApp with fresh plugin instances
 to avoid singleton plugin registry contamination.
@@ -65,7 +65,7 @@ class TestSavePaths(unittest.TestCase):
 
         # -- 1. mock process_raw --
         def _mock_process_raw(input_path, output_path=None, *,
-                              wb_mode="auto", strength=0.8,
+                              wb_mode="daylight", strength=0.8,
                               pipeline=None, post_pipeline=None,
                               brightness=1.0, contrast=1.0,
                               saturation=1.0, half_size=False):
@@ -190,8 +190,8 @@ class TestSavePaths(unittest.TestCase):
 
         self.assertGreaterEqual(len(self._process_raw_calls), 1)
         call = self._process_raw_calls[0]
-        self.assertEqual(call["wb_mode"], "auto",
-                         "filters-only path should use wb_mode='auto', "
+        self.assertEqual(call["wb_mode"], "daylight",
+                         "filters-only path should use wb_mode='daylight', "
                          "not cross's 'camera'")
         # pipeline exists because filters is enabled
         self.assertIsNotNone(call["pipeline"],
@@ -199,9 +199,9 @@ class TestSavePaths(unittest.TestCase):
 
     # ── test 4: batch else path uses auto baseline ────────────────────
 
-    def test_batch_fallback_uses_auto_baseline(self):
+    def test_batch_fallback_uses_daylight_baseline(self):
         """Batch else path (enhance-only / empty pipeline) calls process_raw
-        with wb_mode='auto' and strength=1.0."""
+        with wb_mode='daylight' and strength=1.0."""
         # disable cross, film, filters – only enhance remains
         self._filters.set_enabled(False)
         self._cross.set_enabled(False)
@@ -215,8 +215,8 @@ class TestSavePaths(unittest.TestCase):
         self.assertGreaterEqual(len(self._process_raw_calls), 1,
                                 "batch processing should call process_raw")
         call = self._process_raw_calls[0]
-        self.assertEqual(call["wb_mode"], "auto",
-                         "batch else path must use wb_mode='auto'")
+        self.assertEqual(call["wb_mode"], "daylight",
+                         "batch else path must use wb_mode='daylight'")
         self.assertEqual(call["strength"], 1.0,
                          "batch else path must use strength=1.0")
 
