@@ -745,7 +745,7 @@ class ImageToolkitApp(QMainWindow):
         """链式处理：cross|film → filters → enhance。"""
         cam = cam_snap.astype(np.float32) / 255.0
         tgt = tgt_snap.astype(np.float32) / 255.0
-        result = tgt.copy()
+        result = cam.copy()
 
         cross = self._plugin_map.get("cross")
         film = self._plugin_map.get("film")
